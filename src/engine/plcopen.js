@@ -453,7 +453,7 @@ export function exportPlcopen(program, { machine = null, now = new Date(), proje
   const project = el('project', { xmlns: PLCOPEN_NS, 'xmlns:xhtml': XHTML_NS, 'xmlns:xsd': 'http://www.w3.org/2001/XMLSchema' },
     el('fileHeader', {
       companyName: 'CLP Simu', productName: 'CLP Simu', productVersion: '0.1.0', creationDateTime: stamp,
-      contentDescription: 'Programa exportado do simulador CLP Simu (protótipo). Revise e teste no ambiente de destino antes de usar.',
+      contentDescription: 'Programa exportado do simulador CLP Simu. Revise e teste no ambiente de destino antes de usar.',
     }),
     el('contentHeader', { name: projectName ?? (machine ? `CLP Simu – ${machine.name}` : 'CLP Simu'), modificationDateTime: stamp },
       el('coordinateInfo', {},

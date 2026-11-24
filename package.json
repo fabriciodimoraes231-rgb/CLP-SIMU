@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "author": "fabriciodimoraes231-rgb (https://github.com/fabriciodimoraes231-rgb)",
-  "description": "Protótipo de simulador de CLP com editor ladder e simulação de máquinas, sem dependências externas.",
+  "description": "Simulador de CLP com editor ladder e simulação de máquinas, sem dependências externas.",
   "type": "module",
   "scripts": {
     "start": "node server.mjs",

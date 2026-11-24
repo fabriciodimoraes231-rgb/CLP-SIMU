@@ -1,13 +1,10 @@
 # CLP Simu — simulador de CLP com ladder e máquinas virtuais
 
-Protótipo de simulador de CLP (controlador lógico programável) que roda no navegador.
+Simulador de CLP (controlador lógico programável) que roda no navegador.
 Você monta o programa em **linguagem ladder** (diagrama de contatos), coloca o CLP em
 **RUN** e vê uma **máquina simulada** responder às saídas, com os sensores voltando como entradas.
 
 Desenvolvido por [fabriciodimoraes231-rgb](https://github.com/fabriciodimoraes231-rgb).
-
-> **Status: protótipo.** Não é uma ferramenta validada para comissionamento real: os resultados
-> da simulação são indicativos. Revise e teste antes de usar com equipamentos de verdade.
 
 ## Como executar
 
