@@ -1,0 +1,19 @@
+# Dependências e logs (o projeto não usa dependências, mas evita commits acidentais)
+node_modules/
+npm-debug.log*
+*.log
+
+# Arquivos gerados por ferramentas e exportações
+saida-plcopen/
+programa-*.json
+programa-*.xml
+
+# Esquemas de terceiros (ex.: tc6_xml_v201.xsd do PLCopen) ficam fora do repositório
+*.xsd
+
+# Configurações locais de ferramentas de desenvolvimento
+.vscode/
+
+# Sistema operacional
+Thumbs.db
+.DS_Store

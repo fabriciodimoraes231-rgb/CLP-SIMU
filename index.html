@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CLP Simu – Simulador Ladder</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">CLP<span>Simu</span></div>
+
+    <label class="field-inline">Máquina
+      <select id="machineSelect" aria-label="Máquina simulada"></select>
+    </label>
+
+    <label class="field-inline">Controle
+      <select id="controlMode" aria-label="Quem controla a máquina">
+        <option value="interno">CLP interno (ladder)</option>
+        <option value="servidor">CLP interno + servidor Modbus (HMI/SCADA)</option>
+        <option value="externo">CLP externo: o CLP se conecta ao simulador</option>
+        <option value="cliente">CLP externo: o simulador se conecta ao CLP</option>
+      </select>
+    </label>
+
+    <div class="run-controls" role="group" aria-label="Execução do CLP">
+      <button type="button" id="btnRun" class="btn run">▶ RUN</button>
+      <button type="button" id="btnStop" class="btn stop" disabled>■ STOP</button>
+      <span id="status" class="status stop" aria-live="polite">STOP</span>
+      <label class="field-inline">Velocidade
+        <select id="speed">
+          <option value="0.25">0,25×</option>
+          <option value="0.5">0,5×</option>
+          <option value="1" selected>1×</option>
+          <option value="2">2×</option>
+          <option value="4">4×</option>
+        </select>
+      </label>
+      <span id="scanInfo" class="scan-info"></span>
+    </div>
+
+    <div class="file-controls" role="group" aria-label="Programa">
+      <div class="menu">
+        <button type="button" id="btnExample" class="btn" aria-expanded="false" aria-controls="exampleList">Carregar exemplo</button>
+        <div id="exampleList" class="menu-list" hidden></div>
+      </div>
+      <button type="button" id="btnNew" class="btn">Novo</button>
+      <div class="menu">
+        <button type="button" id="btnExport" class="btn" aria-haspopup="true" aria-expanded="false" aria-controls="exportList">Exportar ▾</button>
+        <div id="exportList" class="menu-list" hidden>
+          <button type="button" data-export="json"><b>Programa do CLP Simu (.json)</b>
+            <small>Para importar aqui de novo ou rodar com tools/clp-externo.mjs.</small></button>
+          <button type="button" data-export="plcopen"><b>PLCopen XML (.xml)</b>
+            <small>Formato de troca da IEC 61131-3 (OpenPLC Editor, Beremiz).</small></button>
+        </div>
+      </div>
+      <label class="btn">Importar<input type="file" id="fileImport" accept=".json,application/json" hidden></label>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="pane ladder-pane" aria-label="Editor ladder">
+      <div id="palette" class="palette"></div>
+      <div id="errors" class="errors" role="alert" hidden></div>
+      <div id="exportNotes" class="notes" role="status" hidden></div>
+      <div id="ladder" class="ladder"></div>
+    </section>
+
+    <aside class="side">
+      <section class="pane machine" aria-labelledby="machineName">
+        <h2 id="machineName"></h2>
+        <p id="machineDesc" class="muted"></p>
+        <canvas id="machineCanvas" aria-label="Animação da máquina"></canvas>
+        <div class="panel-row">
+          <div id="controls" class="controls" aria-label="Painel de operação"></div>
+          <div id="stats" class="stats" aria-live="off"></div>
+        </div>
+        <div id="extras" class="extras"></div>
+      </section>
+
+      <section id="modbusPane" class="pane modbus" aria-labelledby="modbusTitle" hidden>
+        <h3 id="modbusTitle">CLP externo · Modbus TCP</h3>
+        <p class="muted" data-mode="externo">A máquina virou uma planta virtual: um CLP de fora se conecta a este simulador, lê os sensores e aciona os atuadores pela rede. A máquina roda no servidor, em tempo real, mesmo com esta aba em segundo plano. O ladder desta página não é executado neste modo.</p>
+        <p class="muted" data-mode="cliente" hidden>O simulador se conecta ao CLP e, a cada ciclo, escreve os sensores e botões da máquina na memória dele e lê as saídas do programa. A máquina roda no servidor, em tempo real, mesmo com esta aba em segundo plano. O programa do CLP deve usar essas memórias no lugar das entradas físicas.</p>
+        <p class="mb-warn" data-mode="cliente" hidden><b>Segurança:</b> o CLP vai executar o programa com os sensores simulados e acionar as saídas físicas dele. Teste em bancada, com as saídas desligadas de motores, válvulas e outras cargas reais.</p>
+        <form id="clientForm" class="client-form" data-mode="cliente" hidden></form>
+        <p class="muted" data-mode="servidor" hidden>O ladder desta página continua controlando a máquina e fica acessível como um CLP escravo Modbus TCP. Um supervisório (HMI/SCADA) lê as E/S e ajusta setpoints escrevendo nas memórias de palavra (MW = registradores holding).</p>
+        <div id="modbusStatus" class="mb-status" aria-live="polite"></div>
+        <label class="chk" data-mode="externo"><input type="checkbox" id="watchdog" checked> Watchdog: desligar as saídas após 1 s sem comunicação</label>
+        <div id="modbusMap" class="io-wrap"></div>
+        <details class="mb-help" data-mode="servidor" hidden>
+          <summary>Como testar</summary>
+          <ol>
+            <li>Coloque o CLP em <b>RUN</b>. No exemplo <b>Controle analógico</b> do tanque, os setpoints ficam em
+              MW1 (nível, 0,1 %), MW2 (temperatura, 0,1 °C) e MW3 (meta de lotes).</li>
+            <li><b>Ler tudo:</b> em outro terminal, na pasta do projeto, rode <code>node tools/modbus.mjs ler</code>.</li>
+            <li><b>Ajustar um setpoint:</b> <code>node tools/modbus.mjs escrever MW2 700</code> muda a temperatura para
+              70,0 °C. Valores fora da faixa são corrigidos pelo próprio ladder.</li>
+            <li><b>Acompanhar:</b> <code>node tools/modbus.mjs monitorar</code> mostra E/S e MW mudando.</li>
+            <li><b>HMI/SCADA de terceiros</b> (ScadaBR, Node-RED…): cadastre um escravo Modbus TCP no endereço acima;
+              registradores holding 0–63 = MW0–MW63. Instalar esses programas depende de aprovação da TI.</li>
+          </ol>
+        </details>
+        <details class="mb-help" data-mode="cliente" hidden>
+          <summary>Como testar</summary>
+          <ol>
+            <li><b>Ensaiar sem o CLP:</b> em outro terminal, na pasta do projeto, rode
+              <code>node tools/clp-escravo.mjs</code>. Ele imita um CLP escravo Modbus em <code>127.0.0.1:1502</code>,
+              rodando o ladder de exemplo desta máquina. Configure aqui IP <code>127.0.0.1</code>, porta <code>1502</code>,
+              entradas em coils a partir de 0 e saídas em coils a partir de 100, e clique em <b>Aplicar e conectar</b>.</li>
+            <li><b>Com o CLP:</b> ligue o cabo, configure no notebook um IP fixo na mesma faixa do CLP (ex.: CLP
+              192.168.1.10, notebook 192.168.1.2) e habilite o Modbus TCP servidor no CLP. Mudar a configuração de rede
+              do notebook pode exigir a TI.</li>
+            <li>No programa do CLP, use as memórias escritas pelo simulador no lugar das entradas físicas, e as saídas
+              (ou memórias) que o simulador lê para acionar a máquina. O mapa acima mostra o endereço de cada ponto.</li>
+            <li>Se o CLP parar de responder por 1 s, a máquina simulada para. Ao trocar de modo, o simulador zera as
+              entradas no CLP antes de desconectar.</li>
+          </ol>
+        </details>
+        <details class="mb-help" data-mode="externo">
+          <summary>Como testar</summary>
+          <ol>
+            <li><b>Sem instalar nada:</b> em outro terminal, na pasta do projeto, rode
+              <code>node tools/clp-externo.mjs</code>. Ele executa o programa de exemplo desta máquina como um CLP separado.
+              Depois aperte <b>LIGA</b> aqui.</li>
+            <li><b>Ver o tráfego:</b> <code>node tools/modbus.mjs monitorar</code> mostra as E/S mudando.</li>
+            <li><b>Seu próprio ladder:</b> clique em <b>Exportar</b> e rode
+              <code>node tools/clp-externo.mjs --programa programa-<span data-machine-id></span>.json</code>.</li>
+            <li><b>OpenPLC Runtime, CODESYS ou outro CLP:</b> cadastre um dispositivo escravo Modbus TCP no endereço
+              acima, com entradas discretas e coils a partir do índice 0 (tabela acima). Instalar esses programas
+              depende de aprovação da TI.</li>
+          </ol>
+        </details>
+      </section>
+
+      <section id="props" class="pane props" aria-label="Propriedades"></section>
+
+      <section class="pane" aria-label="Tabela de entradas e saídas">
+        <h3>Entradas, saídas e memórias</h3>
+        <div id="ioTable" class="io-wrap"></div>
+      </section>
+    </aside>
+  </main>
+
+  <datalist id="addrList"></datalist>
+  <datalist id="wordList"></datalist>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <noscript>Este simulador precisa de JavaScript habilitado.</noscript>
+  <script type="module" src="src/ui/app.js"></script>
+</body>
+</html>
