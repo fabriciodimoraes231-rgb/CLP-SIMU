@@ -10,7 +10,7 @@
 //   saídas    coils (FC 1), entradas discretas (FC 2) ou holding (FC 3, 16 bits por registrador)
 //   analógicos holding (FC 16), um registrador por IW (opcional)
 
-import { ModbusClient, ModbusError, EX } from './modbus.mjs';
+import { ModbusClient, ModbusError, ModbusResponseError, EX } from './modbus.mjs';
 import { bitIndex, keyFromIndex } from '../src/engine/iomap.js';
 
 export const CLIENT_DEFAULTS = {
@@ -115,6 +115,9 @@ export function describeError(err, config) {
     }[err.code] ?? `exceção ${err.code}`;
     return `O CLP respondeu com erro na função ${err.fc}: ${hint}.`;
   }
+  if (err instanceof ModbusResponseError) {
+    return `O CLP ${where} respondeu fora do padrão Modbus: ${err.detail}.`;
+  }
   switch (err?.code) {
     case 'ECONNREFUSED': return `${where} recusou a conexão: confira se o Modbus TCP (servidor) está habilitado no CLP e a porta.`;
     case 'EHOSTUNREACH': case 'ENETUNREACH': return `Sem rota para ${config.host}: confira o cabo e o IP do notebook (mesma faixa do CLP).`;
@@ -186,7 +189,12 @@ export class ModbusPoller {
           this.client = await this.connectFn({
             host: this.config.host, port: this.config.port, unitId: this.config.unitId, timeoutMs: 1000,
           });
-          if (!this.running) break;
+          if (!this.running) {
+            // stop() rodou enquanto a conexão abria: fecha aqui, senão ela fica ocupando uma vaga no CLP.
+            this.client.close();
+            this.client = null;
+            break;
+          }
           this.log(`Simulador conectado ao CLP ${this.config.host}:${this.config.port}`);
         } catch (err) {
           this.client = null;
@@ -209,13 +217,15 @@ export class ModbusPoller {
       } catch (err) {
         this.errors++;
         this.setStatus('erro', describeError(err, this.config));
-        // Exceção Modbus: a conexão continua; erro de rede/tempo: reconecta.
-        if (!(err instanceof ModbusError)) {
+        // Exceção Modbus ou resposta fora do padrão: a conexão continua (o enquadramento MBAP segue íntegro) e o
+        // ciclo espera um pouco; erro de rede/tempo: reconecta.
+        const protocolError = err instanceof ModbusError || err instanceof ModbusResponseError;
+        if (!protocolError) {
           this.client?.close();
           this.client = null;
         }
         this.checkWatchdog();
-        if (err instanceof ModbusError) await sleep(500);
+        if (protocolError) await sleep(500);
       }
       this.checkWatchdog();
       await sleep(Math.max(0, this.config.periodMs - (this.now() - t0)));

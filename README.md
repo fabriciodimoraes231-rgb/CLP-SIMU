@@ -132,6 +132,10 @@ O seletor **Controle** do topo tem quatro modos:
 Nos dois modos de CLP externo **a máquina roda no servidor** (`npm start`), em tempo real: ela não congela com a aba
 do navegador em segundo plano. A página vira o painel de operação (mostra a máquina e envia os botões).
 
+Programas em **Python** (ou em qualquer linguagem com Modbus TCP) se integram por esses mesmos modos. Veja
+[docs/migracao-para-python.md](docs/migracao-para-python.md): um exemplo de supervisório em Python e uma comparação do
+que se perde e do que se ganha migrando o simulador para Python.
+
 ## Testar um CLP real
 
 O caminho mais simples para um CLP de bancada (WEG, Altus, Delta e a maioria dos CLPs com Ethernet) é o modo
@@ -287,7 +291,9 @@ respondem "endereço inválido"; eles existem só no modo servidor). Sem a pági
 com a exceção **0x0B** (*gateway target failed to respond*). O painel "CLP externo · Modbus TCP" da página mostra o
 mapa da máquina atual com os estados ao vivo.
 
-**Watchdog** (ligado por padrão): se nenhum cliente Modbus fizer requisições por 1 s, as coils vão a 0 e a máquina para.
+**Watchdog** (ligado por padrão): acompanha o CLP que escreve as coils (a última conexão que escreveu nelas). Se ele
+ficar 1 s sem fazer requisições, as coils vão a 0 e a máquina para. Leituras de outros clientes (um supervisório,
+`tools/modbus.mjs monitorar`) não seguram o watchdog: se o CLP cair, a máquina para mesmo com eles conectados.
 Desligue-o no painel para testar escritas avulsas com `tools/modbus.mjs escrever`.
 
 ### Com OpenPLC Runtime, CODESYS ou outro CLP
@@ -429,6 +435,7 @@ server/                       servidor local (não é entregue ao navegador)
 tools/                        linha de comando: clp-externo.mjs, clp-escravo.mjs (CLP de ensaio), modbus.mjs, plcopen.mjs
                               e validar-plcopen.ps1 (validar contra o XSD do PLCopen)
 tests/                        node:test — motor, máquinas, Modbus, integração e PLCopen
+docs/                         migracao-para-python.md: comparação com Python e exemplo de integração
 ```
 
 **Nova máquina:** crie `src/machines/<nome>.js` seguindo o formato de `conveyor.js`

@@ -339,6 +339,36 @@ test('ponte: watchdog desliga as saídas sem comunicação e nova aba substitui 
   }
 });
 
+test('ponte: watchdog acompanha o CLP que escreve as coils; leituras de outro cliente não o seguram', async (t) => {
+  const srv = await startServer({ port: 0, modbusPort: 0, ...quiet });
+  t.after(() => srv.close());
+  const page = srv.bridge.connectPlant({ send: () => {} });
+  page.receive(helloFor(conveyor, 1000));
+  const plc = await ModbusClient.connect({ port: srv.modbusPort });
+  const monitor = await ModbusClient.connect({ port: srv.modbusPort });
+  t.after(() => { plc.close(); monitor.close(); });
+  const poll = async (read, ms) => {
+    for (const end = Date.now() + ms; Date.now() < end;) {
+      await read();
+      await new Promise((ok) => setTimeout(ok, 100));
+    }
+  };
+
+  // O CLP liga o motor e "trava"; um supervisório segue lendo as coils a cada 100 ms.
+  await plc.writeCoils(0, [true]);
+  assert.deepEqual(srv.bridge.runner.outputs, { 'Q0.0': true });
+  await poll(() => monitor.readCoils(0, 4), 1600);
+  assert.equal(srv.bridge.status().tripped, true, 'watchdog atuou mesmo com o supervisório conectado');
+  assert.deepEqual(srv.bridge.runner.outputs, {}, 'motor desligado');
+
+  // CLP que só escreve quando a saída muda, mas lê as entradas todo ciclo: as leituras dele seguram o watchdog.
+  await plc.writeCoils(0, [true]);
+  assert.equal(srv.bridge.status().tripped, false);
+  await poll(() => plc.readDiscreteInputs(0, 9), 1600);
+  assert.equal(srv.bridge.status().tripped, false, 'o próprio CLP continua comunicando');
+  assert.deepEqual(srv.bridge.runner.outputs, { 'Q0.0': true });
+});
+
 // ---- WebSocket (cliente cru, para verificar o handshake e os quadros) ----
 
 function wsFrame(text) {

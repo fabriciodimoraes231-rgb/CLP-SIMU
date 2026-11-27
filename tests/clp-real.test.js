@@ -7,7 +7,10 @@ import {
   ModbusPoller, validateClientConfig, isPrivateIPv4, packWords, unpackWords, machinePoints, describeError,
 } from '../server/modbus-poller.mjs';
 import { SlavePlc } from '../server/plc-escravo.mjs';
-import { createModbusServer, ModbusClient, ModbusError, EX } from '../server/modbus.mjs';
+import { createServer as createTcpServer } from 'node:net';
+import {
+  createModbusServer, ModbusClient, ModbusError, EX, extractFrames, encodeAdu,
+} from '../server/modbus.mjs';
 import { startServer } from '../server/app.mjs';
 import { conveyor } from '../src/machines/conveyor.js';
 import { tank } from '../src/machines/tank.js';
@@ -221,4 +224,55 @@ test('servidor Modbus: lista de IPs permitidos recusa quem não está nela', asy
   const ok = await ModbusClient.connect({ port: portAllow });
   t.after(() => ok.close());
   assert.deepEqual(await ok.readCoils(0, 2), [false, false], 'IP da lista é atendido');
+});
+
+const clientConfig = (port) => validateClientConfig({
+  host: '127.0.0.1', port, unitId: 1, periodMs: 20,
+  inputs: { table: 'coils', start: 0 }, outputs: { table: 'coils', start: 100 }, analogs: null,
+}, conveyor).config;
+
+test('modo cliente: parar enquanto a conexão abre fecha essa conexão (não ocupa vaga no CLP)', async () => {
+  const runner = new PlantRunner(conveyor, { realtime: false });
+  let closes = 0;
+  const conn = { closed: false, close() { closes++; this.closed = true; } };
+  // Conexão que leva 100 ms para abrir (CLP lento para aceitar).
+  const connect = () => new Promise((ok) => { setTimeout(() => ok(conn), 100); });
+  const poller = new ModbusPoller(clientConfig(502), runner, { connect });
+  poller.start();
+  await wait(20);
+  assert.equal(poller.state, 'conectando');
+  await poller.stop(); // ex.: "Aplicar e conectar" de novo, troca de modo ou aba fechada
+  assert.equal(closes, 1, 'a conexão que abriu depois do stop() foi fechada');
+  assert.equal(poller.client, null);
+  assert.equal(poller.state, 'parado');
+});
+
+test('modo cliente: CLP que responde fora do padrão gera erro claro, sem reconectar a cada ciclo', async (t) => {
+  let connections = 0;
+  const plc = createTcpServer((s) => {
+    connections++;
+    s.on('error', () => {});
+    let pending = Buffer.alloc(0);
+    s.on('data', (chunk) => {
+      const { frames, rest } = extractFrames(Buffer.concat([pending, chunk]));
+      pending = Buffer.from(rest);
+      // Conteúdo certo (confirma FC 15; FC 1 com Q0.0–Q0.3 ligadas), mas sempre com unit id 0 (o pedido usa 1).
+      for (const f of frames) {
+        const pdu = f.pdu[0] === 0x0f ? f.pdu.subarray(0, 5) : Buffer.from([f.pdu[0], 1, 0x0f]);
+        s.write(encodeAdu(f.transactionId, 0, pdu));
+      }
+    });
+  });
+  const port = await listen(plc);
+  t.after(() => plc.close());
+  const runner = new PlantRunner(conveyor, { realtime: false });
+  const poller = new ModbusPoller(clientConfig(port), runner);
+  poller.start();
+  t.after(() => poller.stop());
+  await wait(800);
+  assert.equal(poller.state, 'erro');
+  assert.match(poller.message, /fora do padrão Modbus: unit id 0 na resposta, esperado 1/);
+  assert.equal(connections, 1, 'mantém a conexão em vez de reconectar a cada 20 ms');
+  assert.ok(poller.errors >= 1 && poller.errors <= 3, `espera entre tentativas (${poller.errors} erros em 800 ms)`);
+  assert.deepEqual(runner.outputs, {}, 'saídas de uma resposta inválida não chegam à máquina');
 });

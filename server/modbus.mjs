@@ -6,8 +6,9 @@
 // O modelo de dados é um objeto com tabelas tipadas:
 //   { coils: Uint8Array, discreteInputs: Uint8Array,
 //     inputRegisters: Uint16Array, holdingRegisters: Uint16Array,
-//     isAvailable?(): boolean, writable?(table): boolean, onWrite?(table, start, qty), onRequest?() }
+//     isAvailable?(): boolean, writable?(table): boolean, onWrite?(table, start, qty, conn), onRequest?(conn) }
 // writable('coils') = false responde às escritas de coils (FC 5, 15) com a exceção 0x01.
+// conn identifica a conexão TCP que fez a requisição (o mesmo objeto enquanto ela estiver aberta).
 
 import { createServer, connect } from 'node:net';
 
@@ -62,11 +63,12 @@ function readRegisters(fc, pdu, table) {
 /**
  * Processa uma PDU de requisição e devolve a PDU de resposta (ou de exceção).
  * Ordem das verificações conforme a especificação: função → quantidade/valor → endereço → execução.
+ * conn (opcional) é repassado a onRequest/onWrite para o modelo saber qual cliente fez a requisição.
  */
-export function handlePdu(pdu, model) {
+export function handlePdu(pdu, model, conn = null) {
   if (!pdu?.length) return exception(0, EX.ILLEGAL_FUNCTION);
   const fc = pdu[0];
-  model.onRequest?.();
+  model.onRequest?.(conn);
   const available = () => model.isAvailable?.() ?? true;
   const unavailable = () => exception(fc, EX.GATEWAY_TARGET_FAILED);
   const readOnly = (table) => available() && model.writable?.(table) === false;
@@ -91,7 +93,7 @@ export function handlePdu(pdu, model) {
       if (addr >= model.coils.length) return exception(fc, EX.ILLEGAL_ADDRESS);
       if (!available()) return unavailable();
       model.coils[addr] = value ? 1 : 0;
-      model.onWrite?.('coils', addr, 1);
+      model.onWrite?.('coils', addr, 1, conn);
       return Buffer.from(pdu);
     }
     case 0x06: {
@@ -100,7 +102,7 @@ export function handlePdu(pdu, model) {
       if (addr >= model.holdingRegisters.length) return exception(fc, EX.ILLEGAL_ADDRESS);
       if (!available()) return unavailable();
       model.holdingRegisters[addr] = pdu.readUInt16BE(3);
-      model.onWrite?.('holdingRegisters', addr, 1);
+      model.onWrite?.('holdingRegisters', addr, 1, conn);
       return Buffer.from(pdu);
     }
     case 0x0f: {
@@ -115,7 +117,7 @@ export function handlePdu(pdu, model) {
       if (start + qty > model.coils.length) return exception(fc, EX.ILLEGAL_ADDRESS);
       if (!available()) return unavailable();
       for (let i = 0; i < qty; i++) model.coils[start + i] = (pdu[6 + (i >> 3)] >> (i & 7)) & 1;
-      model.onWrite?.('coils', start, qty);
+      model.onWrite?.('coils', start, qty, conn);
       return pdu.subarray(0, 5);
     }
     case 0x10: {
@@ -129,7 +131,7 @@ export function handlePdu(pdu, model) {
       if (start + qty > model.holdingRegisters.length) return exception(fc, EX.ILLEGAL_ADDRESS);
       if (!available()) return unavailable();
       for (let i = 0; i < qty; i++) model.holdingRegisters[start + i] = pdu.readUInt16BE(6 + 2 * i);
-      model.onWrite?.('holdingRegisters', start, qty);
+      model.onWrite?.('holdingRegisters', start, qty, conn);
       return Buffer.from(pdu.subarray(0, 5));
     }
     default:
@@ -206,7 +208,7 @@ export function createModbusServer(model, { maxClients = 8, hooks = {}, allow = 
       const { frames, rest, error } = extractFrames(buf);
       for (const f of frames) {
         info.requests++;
-        const res = handlePdu(f.pdu, model);
+        const res = handlePdu(f.pdu, model, info);
         if (!socket.destroyed) socket.write(encodeAdu(f.transactionId, f.unitId, res));
       }
       buf = Buffer.from(rest);
@@ -235,6 +237,41 @@ export class ModbusError extends Error {
     super(`Modbus: exceção ${code} na função ${fc} (${EXCEPTION_TEXT[code] ?? 'código desconhecido'})`);
     this.fc = fc;
     this.code = code;
+  }
+}
+
+/** Resposta que não corresponde ao pedido (função, tamanho, eco ou unit id): o equipamento fugiu do protocolo. */
+export class ModbusResponseError extends Error {
+  constructor(detail) {
+    super(`Resposta Modbus inválida: ${detail}`);
+    this.detail = detail;
+  }
+}
+
+/**
+ * Confere a PDU de resposta contra a PDU do pedido. Retorna null se estiver correta ou o problema encontrado.
+ * Exceção (função | 0x80) com 2 bytes é uma resposta válida: quem chama a transforma em ModbusError.
+ */
+export function checkResponse(req, res) {
+  const fc = req[0];
+  if (!res?.length || (res[0] & 0x7f) !== fc) {
+    return `função ${res?.length ? res[0] & 0x7f : '—'} na resposta, esperada ${fc}`;
+  }
+  if (res[0] & 0x80) return res.length === 2 ? null : `exceção com ${res.length} bytes, esperados 2`;
+  const qty = req.length >= 5 ? req.readUInt16BE(3) : 0;
+  const bytes = (k) => `${k} ${k === 1 ? 'byte' : 'bytes'}`;
+  const dataLength = (n) => {
+    if (res.length !== 2 + n) return `resposta com ${bytes(Math.max(0, res.length - 2))} de dados; o pedido exige ${bytes(n)}`;
+    return res[1] === n ? null : `contagem de bytes ${res[1]} na resposta, esperada ${n}`;
+  };
+  switch (fc) {
+    case 0x01: case 0x02: return dataLength(Math.ceil(qty / 8));
+    case 0x03: case 0x04: return dataLength(2 * qty);
+    case 0x05: case 0x06: return res.equals(req) ? null : 'o eco da escrita não confere com o pedido';
+    case 0x0f: case 0x10:
+      return res.length === 5 && res.subarray(1, 5).equals(req.subarray(1, 5))
+        ? null : 'a confirmação da escrita não confere com o endereço e a quantidade pedidos';
+    default: return null;
   }
 }
 
@@ -286,7 +323,12 @@ export class ModbusClient {
       if (!p) continue;
       this.pending.delete(f.transactionId);
       clearTimeout(p.timer);
-      if (f.pdu[0] & 0x80) p.reject(new ModbusError(f.pdu[0] & 0x7f, f.pdu[1]));
+      // O servidor deve devolver o mesmo unit id do pedido (MODBUS Messaging on TCP/IP, cabeçalho MBAP).
+      const problem = f.unitId !== (this.unitId & 0xff)
+        ? `unit id ${f.unitId} na resposta, esperado ${this.unitId & 0xff} (confira o Unit ID configurado)`
+        : checkResponse(p.req, f.pdu);
+      if (problem) p.reject(new ModbusResponseError(problem));
+      else if (f.pdu[0] & 0x80) p.reject(new ModbusError(f.pdu[0] & 0x7f, f.pdu[1]));
       else p.resolve(f.pdu);
     }
     if (error) this.socket.destroy();
@@ -301,7 +343,7 @@ export class ModbusClient {
         this.pending.delete(tid);
         reject(new Error('Tempo esgotado aguardando resposta Modbus.'));
       }, this.timeoutMs);
-      this.pending.set(tid, { resolve, reject, timer });
+      this.pending.set(tid, { resolve, reject, timer, req: pdu });
       this.socket.write(encodeAdu(tid, this.unitId, pdu));
     });
   }

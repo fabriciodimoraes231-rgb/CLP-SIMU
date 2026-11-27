@@ -143,8 +143,8 @@ if (command === 'escrever' && parseAddress(rest[0] ?? '')?.area === 'MW') {
     await client.writeCoil(index, value === '1');
     const k = keyFromIndex('Q', index);
     console.log(`Coil ${index} (${modbusRef('COIL', index)}) · ${k}${sym(k) ? ` ${sym(k)}` : ''} ← ${value}`);
-    console.log('Obs.: com o watchdog ligado na página, a saída volta a 0 após 1 s sem comunicação.'
-      + ' Para segurar o valor, deixe "monitorar" rodando em outro terminal ou desligue o watchdog.');
+    console.log('Obs.: com o watchdog ligado na página, a saída volta a 0 após 1 s sem comunicação desta conexão.'
+      + ' Para segurar o valor, desligue o watchdog no painel da página.');
   } catch (err) {
     if (err instanceof ModbusError && err.code === EX.ILLEGAL_FUNCTION) {
       console.error('As saídas pertencem ao ladder do CLP interno e não podem ser escritas pelo Modbus.'

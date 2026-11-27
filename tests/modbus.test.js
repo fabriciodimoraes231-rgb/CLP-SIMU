@@ -1,9 +1,10 @@
 // Testes do Modbus TCP: exemplos da especificação, exceções, enquadramento TCP e cliente.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { connect } from 'node:net';
+import { connect, createServer as createTcpServer } from 'node:net';
 import {
-  handlePdu, encodeAdu, extractFrames, createModbusServer, ModbusClient, ModbusError, EX,
+  handlePdu, encodeAdu, extractFrames, createModbusServer, ModbusClient, ModbusError, ModbusResponseError,
+  checkResponse, EX,
 } from '../server/modbus.mjs';
 import {
   packArea, unpackArea, bitIndex, keyFromIndex, modbusRef, sanitizeBytes, toRegister,
@@ -211,4 +212,54 @@ test('Modbus: tabela de coils só leitura responde 0x01 às escritas e continua 
   assert.equal(m.coils[3], 1, 'nada foi escrito');
   assert.equal(toHex(handlePdu(hex('06 0001 0352'), m)), '06 00 01 03 52', 'registradores continuam graváveis');
   assert.equal(m.holdingRegisters[1], 850);
+});
+
+test('cliente Modbus: recusa resposta que não confere com o pedido (função, bytes, eco, unit id)', async (t) => {
+  // "CLP" de teste: responde o que cada caso mandar, com o mesmo transaction id do pedido.
+  let reply = null;
+  const plc = createTcpServer((s) => {
+    s.on('error', () => {});
+    let pending = Buffer.alloc(0);
+    s.on('data', (chunk) => {
+      const { frames, rest } = extractFrames(Buffer.concat([pending, chunk]));
+      pending = Buffer.from(rest);
+      for (const f of frames) {
+        const r = reply(f);
+        s.write(encodeAdu(f.transactionId, r.unitId ?? f.unitId, r.pdu));
+      }
+    });
+  });
+  await new Promise((ok) => plc.listen(0, '127.0.0.1', ok));
+  t.after(() => plc.close());
+  const client = await ModbusClient.connect({ port: plc.address().port, unitId: 1 });
+  t.after(() => client.close());
+  const invalid = (re) => (e) => e instanceof ModbusResponseError && re.test(e.message);
+
+  // 10 coils ocupam 2 bytes e o "CLP" manda 1: antes os bits que faltavam viravam 0 sem nenhum erro.
+  reply = () => ({ pdu: hex('01 01 05') });
+  await assert.rejects(client.readCoils(0, 10), invalid(/resposta com 1 byte de dados; o pedido exige 2 bytes/));
+  reply = () => ({ pdu: hex('01 03 05 01') });
+  await assert.rejects(client.readCoils(0, 10), invalid(/contagem de bytes 3 na resposta, esperada 2/));
+  reply = () => ({ pdu: hex('02 02 05 01') });
+  await assert.rejects(client.readCoils(0, 10), invalid(/função 2 na resposta, esperada 1/));
+  reply = () => ({ pdu: hex('03 02 00') });
+  await assert.rejects(client.readHoldingRegisters(0, 1), invalid(/o pedido exige 2 bytes/));
+  reply = () => ({ pdu: hex('0F 0000 0005') });
+  await assert.rejects(client.writeCoils(0, new Array(9).fill(true)), invalid(/confirmação da escrita/));
+  reply = () => ({ pdu: hex('05 0003 0000') });
+  await assert.rejects(client.writeCoil(3, true), invalid(/eco da escrita/));
+  reply = () => ({ unitId: 7, pdu: hex('01 01 00') });
+  await assert.rejects(client.readCoils(0, 8), invalid(/unit id 7 na resposta, esperado 1/));
+
+  // Respostas corretas continuam aceitas, exceção continua sendo ModbusError e a conexão segue utilizável.
+  reply = () => ({ pdu: hex('01 02 05 01') });
+  assert.deepEqual((await client.readCoils(0, 10)).map(Number), [1, 0, 1, 0, 0, 0, 0, 0, 1, 0]);
+  reply = (f) => ({ pdu: f.pdu });
+  await client.writeCoil(3, true);
+  reply = () => ({ pdu: hex('81 02') });
+  await assert.rejects(client.readCoils(0, 10), (e) => e instanceof ModbusError && e.code === EX.ILLEGAL_ADDRESS);
+
+  assert.equal(checkResponse(hex('10 0000 0002 04 0001 0002'), hex('10 0000 0002')), null);
+  assert.equal(checkResponse(hex('04 0000 0002'), hex('04 04 0000 028F')), null);
+  assert.match(checkResponse(hex('03 0000 0001'), hex('83 02 00')), /exceção com 3 bytes/);
 });

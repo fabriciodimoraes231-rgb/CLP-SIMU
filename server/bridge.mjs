@@ -70,6 +70,10 @@ export class PlantBridge {
     this.clients = new Map();
     this.lastRequest = 0;
     this.requests = 0;
+    // Watchdog do modo 'servidor': acompanha só o mestre (a conexão que escreveu as coils por último).
+    // Leituras de outros clientes (supervisório, tools/modbus.mjs monitorar) não o seguram.
+    this.master = null;
+    this.lastMasterRequest = 0;
     this.watchdogMs = 0;
     this.tripped = false;
     this.modbusAddress = null;
@@ -86,12 +90,18 @@ export class PlantBridge {
       get holdingRegisters() { return bridge.role === 'planta' ? EMPTY_REGS : holding; },
       isAvailable: () => this.plant !== null && !(this.role === 'planta' && this.plant.mode === 'cliente'),
       writable: (table) => !(table === 'coils' && this.role === 'clp'),
-      onRequest: () => { this.lastRequest = this.now(); this.requests++; },
-      onWrite: (table, start, qty) => {
+      onRequest: (conn) => {
+        this.lastRequest = this.now();
+        this.requests++;
+        if (conn && conn === this.master) this.lastMasterRequest = this.lastRequest;
+      },
+      onWrite: (table, start, qty, conn) => {
         if (table === 'holdingRegisters') {
           this.pushHolding(start, qty);
           return;
         }
+        this.master = conn ?? null;
+        this.lastMasterRequest = this.now();
         this.tripped = false;
         this.applyCoils();
       },
@@ -320,6 +330,7 @@ export class PlantBridge {
     this.holding.fill(0);
     this.hrSeq = 0;
     this.lastWrite = null;
+    this.master = null;
     this.tripped = false;
   }
 
@@ -327,12 +338,12 @@ export class PlantBridge {
 
   tick() {
     if (!this.plant) return;
-    const idle = this.now() - this.lastRequest;
+    const idle = this.now() - this.lastMasterRequest;
     if (this.role === 'planta' && this.plant.mode === 'servidor' && this.watchdogMs > 0 && idle > this.watchdogMs
       && this.model.coils.some((v) => v)) {
       this.model.coils.fill(0);
       this.tripped = true;
-      this.log(`Watchdog: ${this.watchdogMs} ms sem comunicação Modbus, saídas desligadas`);
+      this.log(`Watchdog: ${this.watchdogMs} ms sem comunicação do CLP que escreve as coils, saídas desligadas`);
       this.applyCoils();
     }
     this.pushStatus();
